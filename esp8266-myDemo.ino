@@ -6,6 +6,7 @@
 #include "SoftwareSerial.h"
 #define ledPin 13
 #define ledWork 12
+#define ledRetry 11
 SoftwareSerial softserial(4, 5); // RX, TX
 //--------------------------
 //
@@ -57,7 +58,18 @@ const    char*  cCmdHeartBeat = "GET /?eqid=00000011&reqtype=hartbeat HTTP/1.1";
 char *cOrderOpen = "open";
 //order from server:close
 char *cOrderClose = "close";
+//qr code msg
+char* cQrCodemsg;
 //--------------------------
+typedef enum {
+	STATUS_WAIT_REQ = 0,   //status 0, wait for req
+	STATUS_WAIT_RESP,   //status 1 ,wait for respose
+	STATUS_WAIT_PACKAGE_RESP,  //status 3 ,login ok,wait for get whole ack respose
+	STATUS_WAIT_PACKAGE_REQ,  //status 4 ,got cmd,wait for get whole ack request
+} work_status_t;
+
+bool bCmdFlag = false;
+bool bRespFlag = false;
 
 void setup()
 {
@@ -109,7 +121,7 @@ void setup()
   //   // Serial.println("You're connected to the network");
   //   Serial.print("Beging UDP translation!, target port: ");
   //   Serial.println(localPort);
-  status=0;
+  status=STATUS_WAIT_REQ;
 }
 
 //status
@@ -120,66 +132,76 @@ void setup()
 
 void loop()
 {
-  //status 0, login to server
-  if(status==0){
-    //equitment is login into server
-    sendHttpRequest(severClient,cCmdLogin);
-    //status 1 ,wait for login answer
-    status =1;
+  
+  buf.init(); 
+  //check for QR code reader,if got a msg ,then send to the server.
+  if(0==readQrCode() && status == STATUS_WAIT_REQ){
+    sendHttpRequest(severClient,cQrCodemsg); 
+    status = STATUS_WAIT_RESP ;
   }
-  buf.init();  
-  // if there's incoming data from the net connection send it out the serial port
-  // this is for debugging purposes only
+  // if there's incoming data from the net connection 
+  // check the data for details.
   while (severClient.available()) {
     char c = severClient.read();
     Serial.write(c);
     buf.push(c);
-
+    //get the whole package.
     if (buf.endsWith("\r\n\r\n") ) {
-      if(status==4){
-        sendHttpResponse(severClient,resp); 
-        status=2;     
+      if(status==STATUS_WAIT_PACKAGE_REQ){
+        if(bCmdFlag==true){
+          sendHttpResponse(severClient,resp); 
+        }          
       }
-      if(status==3){
-        status=2;    
-      }
+      // if(status==STATUS_WAIT_PACKAGE_RESP){
+      //   status=STATUS_WAIT_CMD;    
+      // }
+      status=STATUS_WAIT_REQ;
       break;   
     }
     if(c=='\n'){
       char* cmd;
       int iRet;
       //status 2 ,wait for cmd        
-      if(status ==2){        
+      if(status ==STATUS_WAIT_REQ){        
         iRet = recvHttpRequest(cmd);
         //0,get a cmd; -1 ,no cmd
         if(iRet ==0){
           //status 4 ,got cmd,wait for get whole ack respose
-          status=4;
+          status=STATUS_WAIT_PACKAGE_REQ;
           runCommd(cmd);
           resp="Ok";
+          bCmdFlag = true;
+        }
+        else{
+          bCmdFlag = false;
         }
       }
-      //status 1 ,wait for login answer
-      if(status ==1){
+      //wait for an respose
+      if(status == STATUS_WAIT_RESP){
+        status = STATUS_WAIT_PACKAGE_RESP;
         iRet = recvHttpResponse();
         //get resp,but not ok
         if(iRet ==0){
-          status=0;
+          digitalWrite(ledWork, LOW) ;  
+          //status led ,yellow ,please retry      
+          digitalWrite(ledRetry, HIGH) ;
         }
         //get resp, ok
-        if(iRet ==1){
-          //status 3 ,login ok,wait for get whole ack respose
-          status=3;
+        if(iRet ==1){          
           //status led ,green ,always on
           digitalWrite(ledWork, HIGH) ;
+          digitalWrite(ledRetry, LOW) ;  
         }
-      }
+      }      
+
     }
   }
+  
+
   // if 2 seconds have passed since your last connection,
   // then connect again and send data
   if (millis() - lastConnectionTime > postingInterval) {
-    if(status ==2)
+    if(status ==STATUS_WAIT_REQ)
       sendHttpRequest(severClient,cCmdHeartBeat);
   }
 }
@@ -220,6 +242,12 @@ int updateEeprom(char* id,char*pa){
      // Serial.print('.');
  // Serial.println();
   return WL_SUCCESS;
+}
+
+//get info from QRcode reader
+int readQrCode(){
+  cQrCodemsg="hello qr code.";
+  return 0;
 }
 
 //print Wifi status
